@@ -1,0 +1,8 @@
+{
+  "name": "aids3-attendance-app",
+  "version": "1.0.0",
+  "description": "AIDS-3 Smart Attendance Management System",
+  "scripts": {
+    "start": "node start.js"
+  }
+}
