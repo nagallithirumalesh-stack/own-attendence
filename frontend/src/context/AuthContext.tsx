@@ -1,7 +1,15 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { auth, db } from '../utils/firebase';
 
 export interface User {
-  id: number;
+  id: string; // Firebase Auth UID
   email: string;
   name: string;
   roll_number: string;
@@ -27,73 +35,68 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const API_BASE = 'http://localhost:5000/api';
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(localStorage.getItem('auth_token'));
+  const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const loadProfile = async () => {
-      if (!token) {
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const res = await fetch(`${API_BASE}/auth/profile`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setLoading(true);
+      if (firebaseUser) {
+        try {
+          const userDocRef = doc(db, 'users', firebaseUser.uid);
+          const userDoc = await getDoc(userDocRef);
+          
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            setUser({
+              id: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              name: data.name || '',
+              roll_number: data.roll_number || '',
+              department: data.department || 'Artificial Intelligence and Data Science',
+              class: data.class || 'AIDS-3',
+              semester: data.semester || '1',
+              year: data.year || 'III',
+              room_number: data.room_number || 'B404',
+              min_attendance_pct: data.min_attendance_pct || 75
+            });
+            setToken('firebase-session-active');
+          } else {
+            // User doc might be in creation process during register()
           }
-        });
-        
-        if (res.ok) {
-          const userData = await res.json();
-          setUser(userData);
-        } else {
-          // Token expired or invalid
-          logout();
+        } catch (err) {
+          console.error('Error fetching user profile:', err);
+          setError('Failed to fetch user profile.');
         }
-      } catch (err) {
-        console.error('Failed to load profile:', err);
-        // Do not logout on network error so they can work offline if needed,
-        // but set error status.
-        setError('Could not connect to backend server.');
-      } finally {
-        setLoading(false);
+      } else {
+        setUser(null);
+        setToken(null);
       }
-    };
+      setLoading(false);
+    });
 
-    loadProfile();
-  }, [token]);
+    return () => unsubscribe();
+  }, []);
 
   const login = async (email: string, password: string): Promise<boolean> => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        localStorage.setItem('auth_token', data.token);
-        setToken(data.token);
-        setUser(data.user);
-        setLoading(false);
-        return true;
-      } else {
-        setError(data.error || 'Login failed.');
-        setLoading(false);
-        return false;
+      await signInWithEmailAndPassword(auth, email, password);
+      setLoading(false);
+      return true;
+    } catch (err: any) {
+      console.error('Login error:', err);
+      let errMsg = 'Login failed. Please check your credentials.';
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        errMsg = 'Invalid email or password.';
+      } else if (err.code === 'auth/invalid-email') {
+        errMsg = 'Invalid email address format.';
       }
-    } catch (err) {
-      setError('Connection failed. Please make sure backend is running.');
+      setError(errMsg);
       setLoading(false);
       return false;
     }
@@ -108,70 +111,78 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name, roll_number })
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const firebaseUser = userCredential.user;
+      
+      const defaultProfile = {
+        name,
+        roll_number,
+        department: 'Artificial Intelligence and Data Science',
+        class: 'AIDS-3',
+        semester: '1',
+        year: 'III',
+        room_number: 'B404',
+        min_attendance_pct: 75
+      };
+
+      // Save user profile in Firestore
+      await setDoc(doc(db, 'users', firebaseUser.uid), defaultProfile);
+      
+      // Update local state immediately
+      setUser({
+        id: firebaseUser.uid,
+        email,
+        ...defaultProfile
       });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        localStorage.setItem('auth_token', data.token);
-        setToken(data.token);
-        setUser(data.user);
-        setLoading(false);
-        return true;
-      } else {
-        setError(data.error || 'Registration failed.');
-        setLoading(false);
-        return false;
+      setToken('firebase-session-active');
+      setLoading(false);
+      return true;
+    } catch (err: any) {
+      console.error('Registration error:', err);
+      let errMsg = 'Registration failed.';
+      if (err.code === 'auth/email-already-in-use') {
+        errMsg = 'Email already registered.';
+      } else if (err.code === 'auth/weak-password') {
+        errMsg = 'Password is too weak. Must be at least 6 characters.';
+      } else if (err.code === 'auth/invalid-email') {
+        errMsg = 'Invalid email address format.';
       }
-    } catch (err) {
-      setError('Connection failed. Please make sure backend is running.');
+      setError(errMsg);
       setLoading(false);
       return false;
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('auth_token');
-    setToken(null);
-    setUser(null);
-    setError(null);
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setToken(null);
+      setError(null);
+    } catch (err) {
+      console.error('Sign out error:', err);
+    }
   };
 
   const updateProfile = async (updatedData: Partial<User>): Promise<boolean> => {
-    if (!token || !user) return false;
+    if (!user) return false;
     setError(null);
     
-    // Optimistic UI updates
     const backupUser = { ...user };
     const mergedUser = { ...user, ...updatedData } as User;
     setUser(mergedUser);
 
     try {
-      const res = await fetch(`${API_BASE}/auth/profile`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(mergedUser)
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data.user);
-        return true;
-      } else {
-        const data = await res.json();
-        setError(data.error || 'Failed to update profile.');
-        setUser(backupUser); // rollback
-        return false;
-      }
+      const userDocRef = doc(db, 'users', user.id);
+      
+      // Filter out id and email from the updated document fields
+      const { id, email, ...docData } = updatedData;
+      
+      await updateDoc(userDocRef, docData);
+      return true;
     } catch (err) {
-      setError('Failed to sync profile with server.');
+      console.error('Update profile error:', err);
+      setError('Failed to update profile.');
       setUser(backupUser); // rollback
       return false;
     }

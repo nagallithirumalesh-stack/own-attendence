@@ -3,7 +3,6 @@ const path = require('path');
 
 // Paths
 const nodeDir = 'd:\\new project\\node\\node-v20.11.1-win-x64';
-const nodeBin = `"${path.join(nodeDir, 'node.exe')}"`;
 const npmBin = `"${path.join(nodeDir, 'npm.cmd')}"`;
 
 // Add portable node to PATH for subprocesses
@@ -12,24 +11,8 @@ env.PATH = `${nodeDir};${env.PATH || ''}`;
 
 console.log('Starting AIDS-3 Attendance Management Website...');
 
-// 1. Start Backend Server
-console.log('Starting Express backend on port 5000...');
-const backend = spawn(nodeBin, ['index.js'], {
-  cwd: path.join(__dirname, 'backend'),
-  env,
-  shell: true
-});
-
-backend.stdout.on('data', (data) => {
-  console.log(`[Backend] ${data.toString().trim()}`);
-});
-
-backend.stderr.on('data', (data) => {
-  console.error(`[Backend ERROR] ${data.toString().trim()}`);
-});
-
-// 2. Start Frontend Server
-console.log('Starting Vite frontend on port 5173...');
+// Start Frontend Server (Firebase cloud serverless mode)
+console.log('Starting Vite frontend on port 5173 (Firebase serverless mode)...');
 const frontend = spawn(npmBin, ['run', 'dev', '--', '--host', '0.0.0.0'], {
   cwd: path.join(__dirname, 'frontend'),
   env,
@@ -46,8 +29,7 @@ frontend.stderr.on('data', (data) => {
 
 // Handle termination
 process.on('SIGINT', () => {
-  console.log('\nStopping servers...');
-  backend.kill();
+  console.log('\nStopping server...');
   frontend.kill();
   process.exit();
 });

@@ -1,9 +1,13 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
-import { useAuth, API_BASE } from './AuthContext';
+import { useAuth } from './AuthContext';
+import { db } from '../utils/firebase';
+import { 
+  collection, doc, getDocs, setDoc, deleteDoc, writeBatch, query, where 
+} from 'firebase/firestore';
 
 export interface AttendanceRecord {
-  id: number;
-  user_id: number;
+  id: string;
+  user_id: string;
   date: string;
   day: string;
   subject: string;
@@ -71,7 +75,7 @@ interface AttendanceContextType {
 const AttendanceContext = createContext<AttendanceContextType | undefined>(undefined);
 
 export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { token } = useAuth();
+  const { user } = useAuth();
   const [logs, setLogs] = useState<AttendanceRecord[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [stats, setStats] = useState<AttendanceContextType['stats']>(null);
@@ -79,40 +83,130 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [actionLoading, setActionLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchStats = async () => {
-    if (!token) return;
-    try {
-      const res = await fetch(`${API_BASE}/attendance/stats`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setStats(data);
+  // Compute stats in memory from logs and holidays
+  const computeStats = (currentLogs: AttendanceRecord[], currentHolidays: Holiday[]) => {
+    const holidayDates = new Set(currentHolidays.map(h => h.date));
+    
+    let totalPresent = 0;
+    let totalAbsent = 0;
+    const subjectStats: Record<string, SubjectStats> = {};
+    const monthlyStats: Record<string, MonthlyStats> = {};
+
+    currentLogs.forEach(log => {
+      // Exclude holiday records
+      if (log.status === 'HOLIDAY' || holidayDates.has(log.date)) {
+        return;
       }
-    } catch (err) {
-      console.error('Error fetching stats:', err);
-    }
+
+      if (log.status === 'PRESENT') {
+        totalPresent++;
+        if (!subjectStats[log.subject]) {
+          subjectStats[log.subject] = { present: 0, absent: 0, code: log.subject_code };
+        }
+        subjectStats[log.subject].present++;
+
+        const monthKey = log.date.substring(0, 7); // YYYY-MM
+        if (!monthlyStats[monthKey]) {
+          monthlyStats[monthKey] = { present: 0, absent: 0 };
+        }
+        monthlyStats[monthKey].present++;
+      } 
+      
+      else if (log.status === 'ABSENT') {
+        totalAbsent++;
+        if (!subjectStats[log.subject]) {
+          subjectStats[log.subject] = { present: 0, absent: 0, code: log.subject_code };
+        }
+        subjectStats[log.subject].absent++;
+
+        const monthKey = log.date.substring(0, 7);
+        if (!monthlyStats[monthKey]) {
+          monthlyStats[monthKey] = { present: 0, absent: 0 };
+        }
+        monthlyStats[monthKey].absent++;
+      }
+    });
+
+    const totalConducted = totalPresent + totalAbsent;
+    const overallPercentage = totalConducted > 0 
+      ? Math.round((totalPresent / totalConducted) * 10000) / 100 
+      : 0.00;
+
+    setStats({
+      overall: {
+        present: totalPresent,
+        absent: totalAbsent,
+        conducted: totalConducted,
+        percentage: overallPercentage
+      },
+      subjects: subjectStats,
+      monthly: monthlyStats
+    });
   };
 
-  const fetchLogs = async (filters?: { date?: string; subject?: string; status?: string }) => {
-    if (!token) return;
-    try {
-      let url = `${API_BASE}/attendance`;
-      const queryParams: string[] = [];
-      if (filters?.date) queryParams.push(`date=${filters.date}`);
-      if (filters?.subject) queryParams.push(`subject=${filters.subject}`);
-      if (filters?.status) queryParams.push(`status=${filters.status}`);
-
-      if (queryParams.length > 0) {
-        url += `?${queryParams.join('&')}`;
-      }
-
-      const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
+  const fetchLogsInternal = async (): Promise<AttendanceRecord[]> => {
+    if (!user) return [];
+    const q = query(collection(db, 'attendance'), where('userId', '==', user.id));
+    const querySnapshot = await getDocs(q);
+    const fetchedLogs: AttendanceRecord[] = [];
+    
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      fetchedLogs.push({
+        id: docSnap.id,
+        user_id: user.id,
+        date: data.date,
+        day: data.day,
+        subject: data.subject,
+        subject_code: data.subjectCode,
+        period_number: data.periodNumber,
+        start_time: data.startTime,
+        end_time: data.endTime,
+        status: data.status,
+        updated_at: data.timestamp ? data.timestamp.toDate().toISOString() : ''
       });
-      if (res.ok) {
-        const data = await res.json();
-        setLogs(data);
+    });
+
+    // Sort: Date Desc, Period Number Asc
+    fetchedLogs.sort((a, b) => {
+      if (a.date !== b.date) {
+        return b.date.localeCompare(a.date);
+      }
+      return a.period_number - b.period_number;
+    });
+
+    return fetchedLogs;
+  };
+
+  const fetchHolidaysInternal = async (): Promise<Holiday[]> => {
+    if (!user) return [];
+    const q = query(collection(db, 'holidays'), where('userId', '==', user.id));
+    const querySnapshot = await getDocs(q);
+    const fetchedHolidays: Holiday[] = [];
+    
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      fetchedHolidays.push({
+        date: data.date,
+        reason: data.reason || 'Holiday'
+      });
+    });
+
+    fetchedHolidays.sort((a, b) => b.date.localeCompare(a.date));
+    return fetchedHolidays;
+  };
+
+  const fetchStats = async () => {
+    computeStats(logs, holidays);
+  };
+
+  const fetchLogs = async () => {
+    if (!user) return;
+    try {
+      const fetchedLogs = await fetchLogsInternal();
+      setLogs(fetchedLogs);
+      if (stats) {
+        computeStats(fetchedLogs, holidays);
       }
     } catch (err) {
       console.error('Error fetching logs:', err);
@@ -120,32 +214,39 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   const fetchHolidays = async () => {
-    if (!token) return;
+    if (!user) return;
     try {
-      const res = await fetch(`${API_BASE}/holidays`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setHolidays(data);
+      const fetchedHolidays = await fetchHolidaysInternal();
+      setHolidays(fetchedHolidays);
+      if (stats) {
+        computeStats(logs, fetchedHolidays);
       }
     } catch (err) {
       console.error('Error fetching holidays:', err);
     }
   };
 
-  // Load initial data on login
+  // Sync state on user login
   useEffect(() => {
-    if (token) {
+    if (user) {
       setLoading(true);
-      Promise.all([fetchStats(), fetchLogs(), fetchHolidays()])
+      Promise.all([fetchLogsInternal(), fetchHolidaysInternal()])
+        .then(([fetchedLogs, fetchedHolidays]) => {
+          setLogs(fetchedLogs);
+          setHolidays(fetchedHolidays);
+          computeStats(fetchedLogs, fetchedHolidays);
+        })
+        .catch(err => {
+          console.error('Initial Firestore sync error:', err);
+          setError('Failed to sync data with cloud database.');
+        })
         .finally(() => setLoading(false));
     } else {
       setLogs([]);
       setHolidays([]);
       setStats(null);
     }
-  }, [token]);
+  }, [user]);
 
   const markAttendance = async (params: {
     date: string;
@@ -157,131 +258,173 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     end_time: string;
     status: 'PRESENT' | 'ABSENT' | 'NOT_MARKED';
   }): Promise<boolean> => {
-    if (!token) return false;
+    if (!user) return false;
     setActionLoading(true);
     setError(null);
 
-    try {
-      const res = await fetch(`${API_BASE}/attendance/mark`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(params)
-      });
+    const docId = `${user.id}_${params.date}_${params.period_number}_${params.subject}`;
+    const docRef = doc(db, 'attendance', docId);
 
-      if (res.ok) {
-        // Refresh logs and stats instantly
-        await Promise.all([fetchStats(), fetchLogs()]);
-        setActionLoading(false);
-        return true;
+    try {
+      const isHolidayDate = holidays.some(h => h.date === params.date);
+      const targetStatus = isHolidayDate ? 'HOLIDAY' : params.status;
+
+      if (targetStatus === 'NOT_MARKED') {
+        await deleteDoc(docRef);
       } else {
-        const data = await res.json();
-        setError(data.error || 'Failed to mark attendance.');
-        setActionLoading(false);
-        return false;
+        await setDoc(docRef, {
+          userId: user.id,
+          date: params.date,
+          day: params.day,
+          subject: params.subject,
+          subjectCode: params.subject_code,
+          periodNumber: params.period_number,
+          startTime: params.start_time,
+          endTime: params.end_time,
+          status: targetStatus,
+          timestamp: new Date()
+        });
       }
+
+      // Refresh local logs and re-evaluate stats
+      const updatedLogs = await fetchLogsInternal();
+      setLogs(updatedLogs);
+      computeStats(updatedLogs, holidays);
+      
+      setActionLoading(false);
+      return true;
     } catch (err) {
-      setError('Network error. Failed to save attendance.');
+      console.error('Error saving attendance in Firestore:', err);
+      setError('Cloud sync failed. Attendance could not be saved.');
       setActionLoading(false);
       return false;
     }
   };
 
   const markHoliday = async (date: string, reason: string): Promise<boolean> => {
-    if (!token) return false;
+    if (!user) return false;
     setActionLoading(true);
     setError(null);
 
+    const holidayDocRef = doc(db, 'holidays', `${user.id}_${date}`);
+
     try {
-      const res = await fetch(`${API_BASE}/holidays`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ date, reason })
+      // 1. Create/override holiday record
+      await setDoc(holidayDocRef, {
+        userId: user.id,
+        date,
+        reason: reason || 'Holiday'
       });
 
-      if (res.ok) {
-        await Promise.all([fetchHolidays(), fetchStats(), fetchLogs()]);
-        setActionLoading(false);
-        return true;
-      } else {
-        const data = await res.json();
-        setError(data.error || 'Failed to mark holiday.');
-        setActionLoading(false);
-        return false;
-      }
+      // 2. Query and batch-update any existing attendance logs on this date to HOLIDAY status
+      const q = query(collection(db, 'attendance'), where('userId', '==', user.id), where('date', '==', date));
+      const querySnapshot = await getDocs(q);
+      
+      const batch = writeBatch(db);
+      querySnapshot.forEach((docSnap) => {
+        batch.update(docSnap.ref, { status: 'HOLIDAY' });
+      });
+      await batch.commit();
+
+      // 3. Refresh lists and calculate stats
+      const updatedHolidays = await fetchHolidaysInternal();
+      const updatedLogs = await fetchLogsInternal();
+      
+      setHolidays(updatedHolidays);
+      setLogs(updatedLogs);
+      computeStats(updatedLogs, updatedHolidays);
+
+      setActionLoading(false);
+      return true;
     } catch (err) {
-      setError('Network error. Failed to declare holiday.');
+      console.error('Error declaring holiday in Firestore:', err);
+      setError('Cloud sync failed. Holiday could not be saved.');
       setActionLoading(false);
       return false;
     }
   };
 
   const removeHoliday = async (date: string): Promise<boolean> => {
-    if (!token) return false;
+    if (!user) return false;
     setActionLoading(true);
     setError(null);
 
-    try {
-      const res = await fetch(`${API_BASE}/holidays/${date}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+    const holidayDocRef = doc(db, 'holidays', `${user.id}_${date}`);
 
-      if (res.ok) {
-        await Promise.all([fetchHolidays(), fetchStats(), fetchLogs()]);
-        setActionLoading(false);
-        return true;
-      } else {
-        const data = await res.json();
-        setError(data.error || 'Failed to remove holiday.');
-        setActionLoading(false);
-        return false;
-      }
+    try {
+      // 1. Remove holiday record
+      await deleteDoc(holidayDocRef);
+
+      // 2. Remove all attendance logs on this date that are set to HOLIDAY (reverting them back to NOT_MARKED)
+      const q = query(
+        collection(db, 'attendance'), 
+        where('userId', '==', user.id), 
+        where('date', '==', date),
+        where('status', '==', 'HOLIDAY')
+      );
+      const querySnapshot = await getDocs(q);
+
+      const batch = writeBatch(db);
+      querySnapshot.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
+      });
+      await batch.commit();
+
+      // 3. Refresh local lists
+      const updatedHolidays = await fetchHolidaysInternal();
+      const updatedLogs = await fetchLogsInternal();
+      
+      setHolidays(updatedHolidays);
+      setLogs(updatedLogs);
+      computeStats(updatedLogs, updatedHolidays);
+
+      setActionLoading(false);
+      return true;
     } catch (err) {
-      setError('Network error. Failed to remove holiday.');
+      console.error('Error removing holiday in Firestore:', err);
+      setError('Cloud sync failed. Holiday could not be removed.');
       setActionLoading(false);
       return false;
     }
   };
 
-  // Resets the DB records for this specific student user
   const resetDatabase = async (): Promise<boolean> => {
-    if (!token) return false;
+    if (!user) return false;
     setActionLoading(true);
     setError(null);
+
     try {
-      // Deletes all attendance logs and holidays for this user
-      // We implement a simplified way: remove all custom holidays and attendance records
-      // We can do this by deleting each holiday and attendance log, or we could add a backend route.
-      // Since we want to keep it simple, let's delete holidays and delete attendance records.
-      // We will add a clear-data logic:
-      // Let's call a DELETE request to /api/attendance/reset
-      // Oh! We didn't define a route in index.js for reset.
-      // But we can implement a custom reset by calling backend, or let's add the route in index.js,
-      // or we can delete holidays and logs via code.
-      // Wait, let's check: can we add a route in index.js to reset or clear user data?
-      // Yes! In index.js, let's add `app.post('/api/attendance/reset', ...)` which deletes all records for req.userId.
-      // Let's modify index.js or just write the call here, and edit index.js to support it!
-      // This is very clean. Let's write the API call and update index.js later.
-      const res = await fetch(`${API_BASE}/attendance/reset`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
+      // 1. Query logs and holidays
+      const logsQuery = query(collection(db, 'attendance'), where('userId', '==', user.id));
+      const logsSnapshot = await getDocs(logsQuery);
+
+      const holidaysQuery = query(collection(db, 'holidays'), where('userId', '==', user.id));
+      const holidaysSnapshot = await getDocs(holidaysQuery);
+
+      // 2. Batch-delete all records
+      const batch = writeBatch(db);
+      logsSnapshot.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
       });
-      
-      if (res.ok) {
-        await Promise.all([fetchHolidays(), fetchStats(), fetchLogs()]);
-        setActionLoading(false);
-        return true;
-      }
+      holidaysSnapshot.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
+      });
+      await batch.commit();
+
+      // 3. Clear local states
+      setLogs([]);
+      setHolidays([]);
+      setStats({
+        overall: { present: 0, absent: 0, conducted: 0, percentage: 0 },
+        subjects: {},
+        monthly: {}
+      });
+
       setActionLoading(false);
-      return false;
+      return true;
     } catch (err) {
-      setError('Network error. Failed to reset database.');
+      console.error('Error resetting database in Firestore:', err);
+      setError('Database reset failed. Try again.');
       setActionLoading(false);
       return false;
     }
