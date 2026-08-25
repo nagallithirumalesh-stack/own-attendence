@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { AttendanceProvider, useAttendance } from './context/AttendanceContext';
+import { AuthProvider, useAuth, User } from './context/AuthContext';
+import { AttendanceProvider, useAttendance, AttendanceRecord, Holiday, OverallStats, SubjectStats } from './context/AttendanceContext';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { db } from './utils/firebase';
 import { 
   PERIODS, 
   SUBJECTS, 
@@ -24,7 +26,9 @@ import {
   Calculator, 
   Sun, 
   Moon, 
-  FileText
+  FileText,
+  Shield,
+  Search
 } from 'lucide-react';
 
 // Helper to format Date to local YYYY-MM-DD
@@ -63,7 +67,7 @@ const AppContent: React.FC = () => {
   } = useAttendance();
 
   // Routing State
-  const [activeTab, setActiveTab] = useState<'home' | 'timetable' | 'attendance' | 'calendar' | 'profile'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'timetable' | 'attendance' | 'calendar' | 'profile' | 'admin'>('home');
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
 
@@ -133,6 +137,7 @@ const AppContent: React.FC = () => {
   const [editSem, setEditSem] = useState<string>('');
   const [editYear, setEditYear] = useState<string>('');
   const [editThreshold, setEditThreshold] = useState<number>(75);
+  const [editRole, setEditRole] = useState<'student' | 'admin'>('student');
 
   useEffect(() => {
     if (user) {
@@ -142,6 +147,7 @@ const AppContent: React.FC = () => {
       setEditSem(user.semester || '1');
       setEditYear(user.year || 'III');
       setEditThreshold(user.min_attendance_pct || 75);
+      setEditRole(user.role || 'student');
     }
   }, [user]);
 
@@ -292,7 +298,8 @@ const AppContent: React.FC = () => {
       room_number: editRoom,
       semester: editSem,
       year: editYear,
-      min_attendance_pct: Number(editThreshold)
+      min_attendance_pct: Number(editThreshold),
+      role: editRole
     });
     if (success) {
       alert('Profile updated successfully!');
@@ -1404,6 +1411,19 @@ const AppContent: React.FC = () => {
                 />
               </div>
 
+              {/* Role Selector dropdown */}
+              <div className="pt-2 border-t border-slate-800">
+                <label className="block text-[10px] text-slate-400 uppercase tracking-wide font-bold mb-1.5">Account Role (Admin Mode Testing)</label>
+                <select
+                  value={editRole}
+                  onChange={(e) => setEditRole(e.target.value as 'student' | 'admin')}
+                  className="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500 text-slate-100 rounded-xl px-4 py-2.5 text-xs focus:outline-none transition-colors"
+                >
+                  <option value="student">Student (AIDS-3 Class)</option>
+                  <option value="admin">Admin (Teacher / Department HOD)</option>
+                </select>
+              </div>
+
               <button
                 type="submit"
                 disabled={actionLoading}
@@ -1467,6 +1487,13 @@ const AppContent: React.FC = () => {
           </div>
         )}
 
+        {/* ====================================================
+            VIEW: ADMIN DASHBOARD
+        ==================================================== */}
+        {activeTab === 'admin' && user.role === 'admin' && (
+          <AdminPanel theme={theme} />
+        )}
+
       </main>
 
       {/* ----------------------------------------------------
@@ -1475,29 +1502,36 @@ const AppContent: React.FC = () => {
       <nav className={`fixed bottom-0 left-0 right-0 z-40 border-t backdrop-blur-lg px-4 py-2 flex justify-around items-center transition-colors ${
         theme === 'dark' ? 'bg-[#0f172a]/95 border-slate-800/80 shadow-slate-950/40' : 'bg-white/95 border-slate-200 shadow-slate-200'
       }`}>
-        {[
-          { tab: 'home', label: 'Home', icon: Home },
-          { tab: 'timetable', label: 'Schedule', icon: Clock },
-          { tab: 'attendance', label: 'Subjects', icon: BookOpen },
-          { tab: 'calendar', label: 'Calendar', icon: CalendarIcon },
-          { tab: 'profile', label: 'Profile', icon: UserIcon },
-        ].map(({ tab, label, icon: Icon }) => (
-          <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab as any);
-              setSelectedDateDetail(null);
-            }}
-            className={`flex flex-col items-center gap-1.5 py-1 px-3 rounded-xl transition-all duration-300 ${
-              activeTab === tab 
-                ? 'text-indigo-400 scale-105' 
-                : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            <Icon size={20} className={activeTab === tab ? 'stroke-[2.5px]' : 'stroke-[1.8px]'} />
-            <span className="text-[9px] font-bold uppercase tracking-wider">{label}</span>
-          </button>
-        ))}
+        {(() => {
+          const navItems = [
+            { tab: 'home', label: 'Home', icon: Home },
+            { tab: 'timetable', label: 'Schedule', icon: Clock },
+            { tab: 'attendance', label: 'Subjects', icon: BookOpen },
+            { tab: 'calendar', label: 'Calendar', icon: CalendarIcon },
+          ];
+          if (user && user.role === 'admin') {
+            navItems.push({ tab: 'admin', label: 'Admin', icon: Shield });
+          }
+          navItems.push({ tab: 'profile', label: 'Profile', icon: UserIcon });
+
+          return navItems.map(({ tab, label, icon: Icon }) => (
+            <button
+              key={tab}
+              onClick={() => {
+                setActiveTab(tab as any);
+                setSelectedDateDetail(null);
+              }}
+              className={`flex flex-col items-center gap-1.5 py-1 px-3 rounded-xl transition-all duration-300 ${
+                activeTab === tab 
+                  ? 'text-indigo-400 scale-105' 
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <Icon size={20} className={activeTab === tab ? 'stroke-[2.5px]' : 'stroke-[1.8px]'} />
+              <span className="text-[9px] font-bold uppercase tracking-wider">{label}</span>
+            </button>
+          ));
+        })()}
       </nav>
 
       {/* ----------------------------------------------------
@@ -1778,6 +1812,609 @@ const AppContent: React.FC = () => {
         </div>
       )}
 
+    </div>
+  );
+};
+
+interface StudentWithStats extends User {
+  overallPct: number;
+  conducted: number;
+  present: number;
+  absent: number;
+}
+
+const AdminPanel: React.FC<{ theme: 'light' | 'dark' }> = ({ theme }) => {
+  const { 
+    fetchAllStudents, fetchStudentLogs, adminMarkAttendance, 
+    globalHolidays, declareGlobalHoliday, removeGlobalHoliday, actionLoading 
+  } = useAttendance();
+
+  const [students, setStudents] = useState<StudentWithStats[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showLowOnly, setShowLowOnly] = useState<boolean>(false);
+  const [adminSubTab, setAdminSubTab] = useState<'directory' | 'holidays'>('directory');
+
+  // Selected Student Drilldown State
+  const [selectedStudent, setSelectedStudent] = useState<StudentWithStats | null>(null);
+  const [studentLogs, setStudentLogs] = useState<AttendanceRecord[]>([]);
+  const [studentHolidays, setStudentHolidays] = useState<Holiday[]>([]);
+  const [studentStats, setStudentStats] = useState<{
+    overall: OverallStats;
+    subjects: Record<string, SubjectStats>;
+  } | null>(null);
+  const [auditLoading, setAuditLoading] = useState<boolean>(false);
+
+  // Global Holiday Form State
+  const [globalDate, setGlobalDate] = useState<string>('');
+  const [globalReason, setGlobalReason] = useState<string>('');
+
+  const loadDirectoryData = async () => {
+    setLoading(true);
+    try {
+      const studentList = await fetchAllStudents();
+      
+      // Fetch all attendance logs and holidays to group them in memory
+      const [logsSnap, holidaysSnap] = await Promise.all([
+        getDocs(collection(db, 'attendance')),
+        getDocs(collection(db, 'holidays'))
+      ]);
+
+      const logsByUser: Record<string, AttendanceRecord[]> = {};
+      logsSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        const uid = data.userId;
+        if (!logsByUser[uid]) logsByUser[uid] = [];
+        logsByUser[uid].push({
+          id: docSnap.id,
+          user_id: uid,
+          date: data.date,
+          day: data.day,
+          subject: data.subject,
+          subject_code: data.subjectCode,
+          period_number: data.periodNumber,
+          start_time: data.startTime,
+          end_time: data.endTime,
+          status: data.status,
+          updated_at: data.timestamp ? data.timestamp.toDate().toISOString() : ''
+        });
+      });
+
+      const holidaysByUser: Record<string, Holiday[]> = {};
+      holidaysSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        const uid = data.userId;
+        if (!holidaysByUser[uid]) holidaysByUser[uid] = [];
+        holidaysByUser[uid].push({
+          date: data.date,
+          reason: data.reason || 'Holiday'
+        });
+      });
+
+      const updatedStudents: StudentWithStats[] = studentList.map(student => {
+        const sLogs = logsByUser[student.id] || [];
+        const sHolidays = holidaysByUser[student.id] || [];
+        
+        const holidayDates = new Set([
+          ...sHolidays.map(h => h.date),
+          ...globalHolidays.map(g => g.date)
+        ]);
+
+        let present = 0;
+        let absent = 0;
+        sLogs.forEach(log => {
+          if (log.status === 'HOLIDAY' || holidayDates.has(log.date)) return;
+          if (log.status === 'PRESENT') present++;
+          if (log.status === 'ABSENT') absent++;
+        });
+
+        const conducted = present + absent;
+        const pct = conducted > 0 ? (present / conducted) * 100 : 0.00;
+
+        return {
+          ...student,
+          overallPct: pct,
+          conducted,
+          present,
+          absent
+        };
+      });
+
+      setStudents(updatedStudents);
+    } catch (err) {
+      console.error('Error loading admin directory data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDirectoryData();
+  }, [globalHolidays]);
+
+  // Load student detail logs and holidays
+  const handleAuditStudent = async (student: StudentWithStats) => {
+    setSelectedStudent(student);
+    setAuditLoading(true);
+    try {
+      const logs = await fetchStudentLogs(student.id);
+      
+      const holidaysSnap = await getDocs(
+        query(collection(db, 'holidays'), where('userId', '==', student.id))
+      );
+      const sHolidays: Holiday[] = [];
+      holidaysSnap.forEach((docSnap) => {
+        sHolidays.push({
+          date: docSnap.data().date,
+          reason: docSnap.data().reason || 'Holiday'
+        });
+      });
+
+      setStudentLogs(logs);
+      setStudentHolidays(sHolidays);
+      
+      // Calculate subject-wise breakdown for auditing
+      const holidayDates = new Set([
+        ...sHolidays.map(h => h.date),
+        ...globalHolidays.map(g => g.date)
+      ]);
+
+      let totalPresent = 0;
+      let totalAbsent = 0;
+      const subjects: Record<string, SubjectStats> = {};
+
+      logs.forEach(log => {
+        if (log.status === 'HOLIDAY' || holidayDates.has(log.date)) return;
+        if (log.status === 'PRESENT') {
+          totalPresent++;
+          if (!subjects[log.subject]) subjects[log.subject] = { present: 0, absent: 0, code: log.subject_code };
+          subjects[log.subject].present++;
+        } else if (log.status === 'ABSENT') {
+          totalAbsent++;
+          if (!subjects[log.subject]) subjects[log.subject] = { present: 0, absent: 0, code: log.subject_code };
+          subjects[log.subject].absent++;
+        }
+      });
+
+      setStudentStats({
+        overall: {
+          present: totalPresent,
+          absent: totalAbsent,
+          conducted: totalPresent + totalAbsent,
+          percentage: student.overallPct
+        },
+        subjects
+      });
+    } catch (err) {
+      console.error('Error auditing student:', err);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  // Re-run audit calculations when logs are modified
+  const handleUpdateStudentLog = async (log: AttendanceRecord, newStatus: 'PRESENT' | 'ABSENT' | 'NOT_MARKED') => {
+    if (!selectedStudent) return;
+    
+    // Warn before overrides
+    if (newStatus !== 'NOT_MARKED' && log.status !== 'NOT_MARKED' && log.status !== 'HOLIDAY') {
+      if (!confirm(`Are you sure you want to change status from ${log.status} to ${newStatus}?`)) {
+        return;
+      }
+    }
+
+    const success = await adminMarkAttendance(selectedStudent.id, {
+      date: log.date,
+      day: log.day,
+      subject: log.subject,
+      subject_code: log.subject_code,
+      period_number: log.period_number,
+      start_time: log.start_time,
+      end_time: log.end_time,
+      status: newStatus
+    });
+
+    if (success) {
+      // Reload specific student's details
+      const logs = await fetchStudentLogs(selectedStudent.id);
+      setStudentLogs(logs);
+
+      // Re-evaluate stats locally
+      const holidayDates = new Set([
+        ...studentHolidays.map(h => h.date),
+        ...globalHolidays.map(g => g.date)
+      ]);
+
+      let totalPresent = 0;
+      let totalAbsent = 0;
+      const subjects: Record<string, SubjectStats> = {};
+
+      logs.forEach(l => {
+        if (l.status === 'HOLIDAY' || holidayDates.has(l.date)) return;
+        if (l.status === 'PRESENT') {
+          totalPresent++;
+          if (!subjects[l.subject]) subjects[l.subject] = { present: 0, absent: 0, code: l.subject_code };
+          subjects[l.subject].present++;
+        } else if (l.status === 'ABSENT') {
+          totalAbsent++;
+          if (!subjects[l.subject]) subjects[l.subject] = { present: 0, absent: 0, code: l.subject_code };
+          subjects[l.subject].absent++;
+        }
+      });
+
+      const conducted = totalPresent + totalAbsent;
+      const pct = conducted > 0 ? (totalPresent / conducted) * 100 : 0.00;
+
+      setStudentStats({
+        overall: { present: totalPresent, absent: totalAbsent, conducted, percentage: pct },
+        subjects
+      });
+
+      // Update student overallPct in the main list
+      setStudents(prev => prev.map(s => s.id === selectedStudent.id ? { ...s, overallPct: pct, conducted, present: totalPresent, absent: totalAbsent } : s));
+    }
+  };
+
+  const handleDeclareGlobalHoliday = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!globalDate || !globalReason.trim()) {
+      alert('Please provide both date and holiday reason.');
+      return;
+    }
+    const success = await declareGlobalHoliday(globalDate, globalReason);
+    if (success) {
+      setGlobalDate('');
+      setGlobalReason('');
+      alert('Global holiday declared successfully for all students.');
+    }
+  };
+
+  const handleRemoveGlobalHoliday = async (date: string) => {
+    if (confirm(`Remove global holiday status for ${date}?`)) {
+      await removeGlobalHoliday(date);
+    }
+  };
+
+  // Directory Filters
+  const filteredStudents = students.filter(s => {
+    const matchesSearch = s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          s.roll_number.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesLow = showLowOnly ? s.overallPct < s.min_attendance_pct : true;
+    return matchesSearch && matchesLow;
+  });
+
+  // Global Analytics Summary
+  const classAvg = students.length > 0 
+    ? Math.round((students.reduce((acc, s) => acc + s.overallPct, 0) / students.length) * 100) / 100 
+    : 0.00;
+  const lowAttendanceCount = students.filter(s => s.overallPct < s.min_attendance_pct).length;
+
+  return (
+    <div className="space-y-6 animate-fadeIn pb-8">
+      {/* 1. Page Header */}
+      <div>
+        <h2 className="text-xl font-bold flex items-center gap-2">
+          <Shield className="text-indigo-400" size={22} />
+          Class Administration
+        </h2>
+        <p className="text-xs text-slate-400">Class: AIDS-3 | Semester: 1 | Year: III (2026)</p>
+      </div>
+
+      {/* 2. Top Analytics summary widgets */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className={`p-4 rounded-2xl border text-center transition-colors ${
+          theme === 'dark' ? 'bg-slate-900/30 border-slate-800/80 shadow-md' : 'bg-white border-slate-200 shadow-sm'
+        }`}>
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Students</span>
+          <span className="text-xl font-extrabold text-slate-200 block mt-1">{students.length}</span>
+        </div>
+        <div className={`p-4 rounded-2xl border text-center transition-colors ${
+          theme === 'dark' ? 'bg-slate-900/30 border-slate-800/80 shadow-md' : 'bg-white border-slate-200 shadow-sm'
+        }`}>
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Class Average</span>
+          <span className="text-xl font-extrabold text-indigo-400 block mt-1">{classAvg.toFixed(1)}%</span>
+        </div>
+        <div className={`p-4 rounded-2xl border text-center transition-colors ${
+          theme === 'dark' ? 'bg-slate-900/30 border-slate-800/80 shadow-md' : 'bg-white border-slate-200 shadow-sm'
+        }`}>
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Below 75%</span>
+          <span className="text-xl font-extrabold text-rose-500 block mt-1">{lowAttendanceCount}</span>
+        </div>
+      </div>
+
+      {/* 3. Sub-Navigation Tabs */}
+      <div className="flex border-b border-slate-800 gap-4 pb-1">
+        <button
+          onClick={() => setAdminSubTab('directory')}
+          className={`text-xs font-bold uppercase pb-2 px-1 border-b-2 transition-all ${
+            adminSubTab === 'directory'
+              ? 'border-indigo-500 text-indigo-400'
+              : 'border-transparent text-slate-500 hover:text-slate-300'
+          }`}
+        >
+          Student Directory
+        </button>
+        <button
+          onClick={() => setAdminSubTab('holidays')}
+          className={`text-xs font-bold uppercase pb-2 px-1 border-b-2 transition-all ${
+            adminSubTab === 'holidays'
+              ? 'border-indigo-500 text-indigo-400'
+              : 'border-transparent text-slate-500 hover:text-slate-300'
+          }`}
+        >
+          Global Holidays ({globalHolidays.length})
+        </button>
+      </div>
+
+      {/* 4. Tab Content: Directory */}
+      {adminSubTab === 'directory' && (
+        <div className="space-y-4">
+          {/* Search bar and Filters */}
+          <div className="flex flex-col gap-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-3 text-slate-500" size={16} />
+              <input
+                type="text"
+                placeholder="Search by name or roll number..."
+                className="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500 text-slate-100 rounded-xl pl-9 pr-4 py-2.5 text-xs focus:outline-none transition-colors"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+            
+            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="rounded border-slate-850 bg-slate-950 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-slate-950"
+                checked={showLowOnly}
+                onChange={(e) => setShowLowOnly(e.target.checked)}
+              />
+              Show low attendance only (&lt; 75%)
+            </label>
+          </div>
+
+          {/* Directory List */}
+          {loading ? (
+            <div className="text-center py-12 text-slate-500 text-xs">
+              <div className="w-6 h-6 border-2 border-t-indigo-500 border-slate-800 animate-spin rounded-full mx-auto mb-2"></div>
+              Loading directory data...
+            </div>
+          ) : filteredStudents.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center py-12">No student records found matching filters.</p>
+          ) : (
+            <div className="space-y-3">
+              {filteredStudents.map((student) => {
+                const isBelow = student.overallPct < student.min_attendance_pct;
+                return (
+                  <div 
+                    key={student.id} 
+                    className={`p-4 rounded-2xl border transition-colors flex items-center justify-between ${
+                      theme === 'dark' ? 'bg-slate-900/20 border-slate-800/80 hover:border-slate-700' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-200">{student.name}</h4>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{student.roll_number}</p>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <span className={`text-sm font-black ${
+                          isBelow ? 'text-rose-500' : 'text-emerald-500'
+                        }`}>
+                          {student.overallPct.toFixed(1)}%
+                        </span>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase mt-0.5">
+                          {student.conducted} classes
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleAuditStudent(student)}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1.5 rounded-xl text-[10px] transition-colors shadow-md shadow-indigo-600/10 active:scale-95"
+                      >
+                        Audit
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab Content: Global Holidays */}
+      {adminSubTab === 'holidays' && (
+        <div className="space-y-5">
+          {/* Declare Holiday form */}
+          <form onSubmit={handleDeclareGlobalHoliday} className={`p-5 rounded-2xl border space-y-4 transition-colors ${
+            theme === 'dark' ? 'bg-slate-900/30 border-slate-800/80 shadow-md' : 'bg-white border-slate-200'
+          }`}>
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">Declare Global College Holiday</h4>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[9px] text-slate-500 font-bold uppercase mb-1">Select Date</label>
+                <input
+                  type="date"
+                  className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                  value={globalDate}
+                  onChange={(e) => setGlobalDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-[9px] text-slate-500 font-bold uppercase mb-1">Reason</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Independence Day"
+                  className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                  value={globalReason}
+                  onChange={(e) => setGlobalReason(e.target.value)}
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={actionLoading}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl py-2 text-xs font-bold transition-all disabled:opacity-50 active:scale-95"
+            >
+              Declare Global Holiday
+            </button>
+          </form>
+
+          {/* List of Global Holidays */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Declared Holidays List</h4>
+            {globalHolidays.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-8">No global holidays declared yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {globalHolidays.map((holiday) => (
+                  <div key={holiday.date} className="flex justify-between items-center p-3.5 bg-slate-950/40 border border-slate-900 rounded-xl">
+                    <div>
+                      <p className="text-xs font-bold text-slate-300">
+                        {new Date(holiday.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">{holiday.reason}</p>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveGlobalHoliday(holiday.date)}
+                      className="text-rose-400 hover:text-rose-300 p-1.5 bg-rose-950/15 border border-rose-900/40 rounded-lg hover:bg-rose-950/30 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 5. INDIVIDUAL STUDENT DETAIL AUDITOR MODAL */}
+      {selectedStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-center items-end sm:items-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl flex flex-col max-h-[85vh] animate-slideUp">
+            
+            {/* Header */}
+            <div className="flex justify-between items-start border-b border-slate-800 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-200">Student Attendance Audit</h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">{selectedStudent.name} • {selectedStudent.roll_number}</p>
+              </div>
+              <button
+                onClick={() => setSelectedStudent(null)}
+                className="text-xs uppercase tracking-wider font-bold opacity-60 hover:opacity-100 text-slate-200"
+              >
+                Close
+              </button>
+            </div>
+
+            {auditLoading ? (
+              <div className="text-center py-20 text-slate-500 text-xs">
+                <div className="w-6 h-6 border-2 border-t-indigo-500 border-slate-800 animate-spin rounded-full mx-auto mb-2"></div>
+                Loading student records...
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-6 pr-1 min-h-[45vh]">
+                
+                {/* Stats Summary */}
+                {studentStats && (
+                  <div className="p-4 bg-slate-950/40 border border-slate-950 rounded-2xl flex justify-between items-center text-xs">
+                    <div>
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Overall Average</span>
+                      <span className={`text-xl font-black block mt-1 ${
+                        studentStats.overall.percentage < selectedStudent.min_attendance_pct ? 'text-rose-500' : 'text-emerald-500'
+                      }`}>
+                        {studentStats.overall.percentage.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="text-right text-[10px] text-slate-400 font-semibold space-y-0.5">
+                      <p>Present: <b className="text-slate-200">{studentStats.overall.present}</b></p>
+                      <p>Absent: <b className="text-slate-200">{studentStats.overall.absent}</b></p>
+                      <p>Conducted: <b className="text-slate-200">{studentStats.overall.conducted}</b></p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Subject breakdown */}
+                {studentStats && (
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Subject Summary</h4>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {SUBJECTS.map((sub) => {
+                        const subStat = studentStats.subjects[sub.shortName] || { present: 0, absent: 0 };
+                        const total = subStat.present + subStat.absent;
+                        const pct = total > 0 ? (subStat.present / total) * 100 : 0;
+                        const isLow = total > 0 && pct < selectedStudent.min_attendance_pct;
+
+                        return (
+                          <div key={sub.shortName} className="p-3 bg-slate-950/30 border border-slate-950 rounded-xl space-y-1.5">
+                            <div className="flex justify-between items-center text-[10px]">
+                              <span className="font-bold text-slate-300">{sub.shortName}</span>
+                              <span className={isLow ? 'text-rose-400 font-bold' : total > 0 ? 'text-emerald-400 font-bold' : 'text-slate-500 font-bold'}>
+                                {total > 0 ? `${Math.round(pct)}%` : '—'}
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-900">
+                              <div 
+                                className={`h-full rounded-full ${isLow ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                                style={{ width: `${total > 0 ? Math.min(pct, 100) : 0}%` }}
+                              ></div>
+                            </div>
+                            <span className="text-[8px] text-slate-500 font-bold block">
+                              Pres: {subStat.present} / Abs: {subStat.absent}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Detailed Logs Feed & Editor */}
+                <div className="space-y-3">
+                  <h4 className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Marked Logs List</h4>
+                  {studentLogs.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-6">No marked logs registered for this student.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {studentLogs.map((log) => {
+                        if (log.status === 'HOLIDAY') return null; // skip holidays
+                        return (
+                          <div key={log.id} className="p-3.5 bg-slate-950/40 border border-slate-950 rounded-xl flex justify-between items-center">
+                            <div>
+                              <p className="text-xs font-bold text-slate-200">{log.subject}</p>
+                              <p className="text-[9px] text-slate-400 mt-0.5">
+                                {new Date(log.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} • Period {log.period_number} ({log.start_time})
+                              </p>
+                            </div>
+                            <select
+                              value={log.status}
+                              onChange={(e) => handleUpdateStudentLog(log, e.target.value as any)}
+                              className={`text-[9px] font-bold rounded-lg px-2.5 py-1 focus:outline-none border transition-colors cursor-pointer ${
+                                log.status === 'PRESENT'
+                                  ? 'bg-emerald-950/60 border-emerald-900 text-emerald-400'
+                                  : log.status === 'ABSENT'
+                                  ? 'bg-rose-950/60 border-rose-900 text-rose-400'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400'
+                              }`}
+                            >
+                              <option value="PRESENT">Present</option>
+                              <option value="ABSENT">Absent</option>
+                              <option value="NOT_MARKED">Delete (Pending)</option>
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

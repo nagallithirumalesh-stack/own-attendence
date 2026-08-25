@@ -111,6 +111,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     currentHolidays: Holiday[], 
     currentGlobalHolidays: Holiday[]
   ) => {
+    // Combine both personal holidays and global holidays
     const holidayDates = new Set([
       ...currentHolidays.map(h => h.date),
       ...currentGlobalHolidays.map(g => g.date)
@@ -571,11 +572,13 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const docRef = doc(db, 'attendance', docId);
 
     try {
+      // Check for global or student-specific holidays
       const studentHolidaysSnapshot = await getDocs(
         query(collection(db, 'holidays'), where('userId', '==', studentId), where('date', '==', params.date))
       );
       const isStudentHoliday = !studentHolidaysSnapshot.empty;
       
+      const globalHolidayDocRef = doc(db, 'global_holidays', params.date);
       const globalHolidayDoc = await getDocs(
         query(collection(db, 'global_holidays'), where('date', '==', params.date))
       );
@@ -600,6 +603,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         });
       }
 
+      // If we are editing ourselves, sync our local state too
       if (studentId === user.id) {
         const updatedLogs = await fetchLogsInternal();
         setLogs(updatedLogs);
@@ -623,6 +627,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const globalHolidayDocRef = doc(db, 'global_holidays', date);
 
     try {
+      // 1. Save global holiday record
       await setDoc(globalHolidayDocRef, {
         date,
         reason: reason || 'Global College Holiday',
@@ -630,6 +635,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         timestamp: new Date()
       });
 
+      // 2. Query and update all attendance logs on this date for all students to have status = 'HOLIDAY'
       const q = query(collection(db, 'attendance'), where('date', '==', date));
       const querySnapshot = await getDocs(q);
       
@@ -639,6 +645,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       });
       await batch.commit();
 
+      // 3. Refresh list and local calculations
       const updatedGlobalHolidays = await fetchGlobalHolidaysInternal();
       setGlobalHolidays(updatedGlobalHolidays);
       computeStats(logs, holidays, updatedGlobalHolidays);
@@ -661,8 +668,10 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const globalHolidayDocRef = doc(db, 'global_holidays', date);
 
     try {
+      // 1. Remove record
       await deleteDoc(globalHolidayDocRef);
 
+      // 2. Query and remove any attendance logs on this date that had status = 'HOLIDAY'
       const q = query(
         collection(db, 'attendance'), 
         where('date', '==', date),
@@ -676,6 +685,7 @@ export const AttendanceProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       });
       await batch.commit();
 
+      // 3. Refresh list
       const updatedGlobalHolidays = await fetchGlobalHolidaysInternal();
       setGlobalHolidays(updatedGlobalHolidays);
       computeStats(logs, holidays, updatedGlobalHolidays);
